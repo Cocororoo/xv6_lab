@@ -1,0 +1,300 @@
+diff --git a/.vscode/launch.json b/.vscode/launch.json
+new file mode 100644
+index 0000000..6a5110e
+--- /dev/null
++++ b/.vscode/launch.json
+@@ -0,0 +1,18 @@
++{
++    "version": "0.2.0",
++    "configurations": [
++        {
++            "type": "gdb",
++            "request": "attach",
++            "name": "Attach to gdbserver",
++            "executable": "${workspaceRoot}/kernel/kernel",
++            "gdbpath": "gdb-multiarch",
++            "remote": true,            
++            "target": "127.0.0.1:26111",
++            "cwd": "${workspaceRoot}",
++            "setupCommands": {
++                "text": "source ${workspaceFolder}/.gdbinit"
++            }
++        }
++    ]
++}
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 0000000..7aa0930
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,6 @@
++{
++    "files.associations": {
++        "user.h": "c",
++        "types.h": "c"
++    }
++}
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index cac799d..65a91c4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -154,7 +154,9 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
+-
++	$U/_sleep\
++	$U/_pingpong\
++	$U/_find\
+ 
+ ifeq ($(LAB),syscall)
+ UPROGS += \
+diff --git a/kernel/main.c b/kernel/main.c
+index 8a3dc2e..e58a260 100644
+--- a/kernel/main.c
++++ b/kernel/main.c
+@@ -11,6 +11,7 @@ void main() {
+   if (cpuid() == 0) {
+     // consoleinit();
+     // printfinit();
++    printf("[210110401] Enter main(), init kernel\n");
+     printf("\n");
+     printf("xv6 kernel is booting\n");
+     printf("\n");
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 1607145..4f016fb 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -185,6 +185,8 @@ uchar initcode[] = {0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02, 0x97, 0x05,
+ void userinit(void) {
+   struct proc *p;
+ 
++  printf("[210110401] Enter userinit\n");
++  
+   p = allocproc();
+   initproc = p;
+ 
+@@ -198,6 +200,7 @@ void userinit(void) {
+   p->trapframe->sp = PGSIZE;  // user stack pointer
+ 
+   safestrcpy(p->name, "initcode", sizeof(p->name));
++  printf("[210110401] Copy initcode to first user process\n");
+   p->cwd = namei("/");
+ 
+   p->state = RUNNABLE;
+diff --git a/kernel/start.c b/kernel/start.c
+index f704fee..475c485 100644
+--- a/kernel/start.c
++++ b/kernel/start.c
+@@ -52,6 +52,7 @@ void start() {
+     // init uart and printf
+     consoleinit();
+     printfinit();
++    printf("[210110401] In start, init driver, interrupts and change mode\n");
+   }
+ 
+   // switch to supervisor mode and jump to main().
+diff --git a/user/find.c b/user/find.c
+new file mode 100644
+index 0000000..2d7ce2f
+--- /dev/null
++++ b/user/find.c
+@@ -0,0 +1,96 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "kernel/fs.h"
++
++char *fmtname(char *path) {
++  static char buf[DIRSIZ + 1];
++  char *p;
++
++  // Find first character after last slash.
++  for (p = path + strlen(path); p >= path && *p != '/'; p--)
++    ;
++  p++;
++
++  // Return blank-padded name.
++  if (strlen(p) >= DIRSIZ) return p;
++  memmove(buf, p, strlen(p));
++  memset(buf + strlen(p), ' ', DIRSIZ - strlen(p));
++  return buf;
++}
++
++char *trim(char *str) {
++    char *end = str + strlen(str) - 1;
++    while (end > str && *end == ' ') end--;
++    *(end + 1) = '\0';
++    return str;
++}
++
++void find(char *path, char *fname) {
++  char buf[512], *p;
++  int fd;
++  struct dirent de;
++  struct stat st;
++
++  if ((fd = open(path, 0)) < 0) {
++    fprintf(2, "find: cannot open %s\n", path);
++    return;
++  }
++
++  if (fstat(fd, &st) < 0) {
++    fprintf(2, "find: cannot stat %s\n", path);
++    close(fd);
++    return;
++  }
++
++  switch (st.type) {
++    case T_FILE:
++      // printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
++      // printf("path = %s, fmtpath = %s, fname = %s====>strcmp = %d\n", path, fmtname(path), fname, strcmp(fmtname(path), fname));
++      if (strcmp(trim(fmtname(path)), fname) == 0)
++      {
++        printf("%s\n", path);
++      }
++      
++      break;
++
++    case T_DIR:
++      if (strlen(path) + 1 + DIRSIZ + 1 > sizeof buf) {
++        printf("find: path too long\n");
++        break;
++      }
++      strcpy(buf, path);
++      p = buf + strlen(buf);
++      *p++ = '/';
++      while (read(fd, &de, sizeof(de)) == sizeof(de)) {
++        if (de.inum == 0) continue;
++        memmove(p, de.name, DIRSIZ);
++        p[DIRSIZ] = 0;
++        if (stat(buf, &st) < 0) {
++          printf("find: cannot stat %s\n", buf);
++          continue;
++        }
++        if (strcmp(de.name, ".") != 0 && strcmp(de.name, "..") != 0) {
++          find(buf, fname);  // 递归搜索子目录
++        }
++      }
++      break;
++  }
++  close(fd);
++}
++
++int main(int argc, char *argv[]) {
++
++  if (argc < 2) {
++    printf("Missing args!!!\n");
++  } else if (argc == 2) {
++    find(".", argv[1]);
++  } else if (argc == 3) {
++    find(argv[1], argv[2]);
++  } else {
++    printf("Too many args!!!\n");
++    exit(-1);
++  } 
++  
++  exit(0);
++}
+diff --git a/user/init.c b/user/init.c
+index 9ca8790..bbd3c53 100644
+--- a/user/init.c
++++ b/user/init.c
+@@ -23,6 +23,7 @@ int main(void) {
+ 
+   for (;;) {
+     printf("init: starting sh\n");
++    printf("[210110401] Start sh through exec\n");
+     pid = fork();
+     if (pid < 0) {
+       printf("init: fork failed\n");
+diff --git a/user/pingpong.c b/user/pingpong.c
+new file mode 100644
+index 0000000..bce5ef5
+--- /dev/null
++++ b/user/pingpong.c
+@@ -0,0 +1,62 @@
++#include "kernel/types.h"
++#include "user.h"
++
++int main(int argc, char* argv[]){
++    if(argc != 1){
++        printf("Too many args!\n");
++        exit(-1);
++    }
++
++    int pa[2];
++    int pb[2];
++    int ret;
++    ret = pipe(pa) || pipe(pb); 
++    int pid;
++
++    if (ret == 0)
++    {
++        if ((pid = fork()) == -1) {
++            printf("Fork error!");
++            exit(-1);
++        }
++
++        if (pid == 0) { 
++            /* 子进程 */
++            close(pb[1]); // 关闭pb管道写端
++            close(pa[0]); // 关闭pa管道读端
++
++            char buf[5];
++            if (read(pb[0], buf, 4) > 0) {
++                buf[4] = '\0';
++                printf("%d: received %s\n", getpid(), buf);
++
++                // 发送pong给父进程
++                write(pa[1], "pong", 4);
++            }
++
++            close(pa[1]); // 写入完成，关闭写端
++            close(pb[0]); // 读取完成，关闭读端
++        } else {
++            /*父进程*/
++            close(pa[1]); // 关闭pa管道写端
++            close(pb[0]); // 关闭pb管道读端
++
++            // 发送ping给子进程
++            write(pb[1], "ping", 4);
++
++            char buf[5];
++            if (read(pa[0], buf, 4) > 0) {
++                buf[4] = '\0';
++                printf("%d: received %s\n", getpid(), buf);
++            }
++
++            close(pa[0]); // 写入完成，关闭写端
++            close(pb[1]); // 读取完成，关闭读端
++        }
++    } else {
++        printf("Pipe Error!");
++        exit(-1);
++    }
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/sleep.c b/user/sleep.c
+new file mode 100644
+index 0000000..162a0f3
+--- /dev/null
++++ b/user/sleep.c
+@@ -0,0 +1,13 @@
++#include "kernel/types.h"
++#include "user.h"
++
++int main(int argc, char* argv[]){
++    if(argc != 2){
++        printf("Sleep needs one arguments!\n");
++        exit(-1);
++    }
++    int ticks = atoi(argv[1]);
++    sleep(ticks);
++    printf("(Nothing happens for a litte while)\n");
++    exit(0);
++}
+\ No newline at end of file
