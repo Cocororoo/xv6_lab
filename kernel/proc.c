@@ -21,6 +21,19 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[];  // trampoline.S
 
+const char *procstate_str[] = {
+    "unused",
+    "sleep",
+    "runnable",
+    "run",
+    "zombie"
+};
+
+int strcmp(const char *p, const char *q) {
+  while (*p && *p == *q) p++, q++;
+  return (uchar)*p - (uchar)*q;
+}
+
 // initialize the proc table at boot time.
 void procinit(void) {
   struct proc *p;
@@ -271,6 +284,7 @@ int fork(void) {
 // Caller must hold p->lock.
 void reparent(struct proc *p) {
   struct proc *pp;
+  int i = 0;
 
   for (pp = proc; pp < &proc[NPROC]; pp++) {
     // this code uses pp->parent without holding pp->lock.
@@ -281,6 +295,7 @@ void reparent(struct proc *p) {
       // pp->parent can't change between the check and the acquire()
       // because only the parent changes it, and we're the parent.
       acquire(&pp->lock);
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, i++, pp->pid, pp->name, procstate_str[pp->state]);
       pp->parent = initproc;
       // we should wake up init here, but that would require
       // initproc->lock, which would be a deadlock, since we hold
@@ -329,6 +344,8 @@ void exit(int status) {
   // to a dead or wrong process; proc structs are never re-allocated
   // as anything else.
   acquire(&p->lock);
+  if (strcmp(p->name, "sh") != 0)
+    exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, p->parent->pid, p->name, procstate_str[p->state]);
   struct proc *original_parent = p->parent;
   release(&p->lock);
 
@@ -403,6 +420,49 @@ int wait(uint64 addr) {
     // Wait for a child to exit.
     sleep(p, &p->lock);  // DOC: wait-sleep
   }
+}
+
+// Wait for a child process to exit and return its pid.
+// Return -1 if this process has no children.
+int wait_unblock(uint64 addr) {
+  struct proc *np;
+  int pid;
+  struct proc *p = myproc();
+
+  // hold p->lock for the whole time to avoid lost
+  // wakeups from a child's exit().
+  acquire(&p->lock);
+
+  // Scan through table looking for exited children.
+  // havekids = 0;
+  for (np = proc; np < &proc[NPROC]; np++) {
+    // this code uses np->parent without holding np->lock.
+    // acquiring the lock first would cause a deadlock,
+    // since np might be an ancestor, and we already hold p->lock.
+    if (np->parent == p) {
+      // np->parent can't change between the check and the acquire()
+      // because only the parent changes it, and we're the parent.
+      acquire(&np->lock);
+      // havekids = 1;
+      if (np->state == ZOMBIE) {
+        // Found one.
+        pid = np->pid;
+        if (addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate, sizeof(np->xstate)) < 0) {
+          release(&np->lock);
+          release(&p->lock);
+          return -1;
+        }
+        freeproc(np);
+        release(&np->lock);
+        release(&p->lock);
+        return pid;
+      }
+      release(&np->lock);
+    }
+  }
+
+  release(&p->lock);
+  return -1;
 }
 
 // Per-CPU process scheduler.
