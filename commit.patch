@@ -1,0 +1,232 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 0000000..34e45d4
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,6 @@
++{
++    "files.associations": {
++        "proc.h": "c",
++        "user.h": "c"
++    }
++}
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index bf95a78..5e4c5ea 100644
+--- a/Makefile
++++ b/Makefile
+@@ -161,6 +161,7 @@ UPROGS=\
+ 	$U/_zombie\
+ 	$U/_waittest\
+ 	$U/_exittest\
++	$U/_yieldtest\
+ 
+ 
+ ifeq ($(LAB),trap)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index ecea5e6..1c3537b 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -109,6 +109,7 @@ void            setproc(struct proc*);
+ void            sleep(void*, struct spinlock*);
+ void            userinit(void);
+ int             wait(uint64);
++int             wait_unblock(uint64);
+ void            wakeup(void*);
+ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 1607145..826b99f 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -21,6 +21,19 @@ static void freeproc(struct proc *p);
+ 
+ extern char trampoline[];  // trampoline.S
+ 
++const char *procstate_str[] = {
++    "unused",
++    "sleep",
++    "runnable",
++    "run",
++    "zombie"
++};
++
++int strcmp(const char *p, const char *q) {
++  while (*p && *p == *q) p++, q++;
++  return (uchar)*p - (uchar)*q;
++}
++
+ // initialize the proc table at boot time.
+ void procinit(void) {
+   struct proc *p;
+@@ -271,6 +284,7 @@ int fork(void) {
+ // Caller must hold p->lock.
+ void reparent(struct proc *p) {
+   struct proc *pp;
++  int i = 0;
+ 
+   for (pp = proc; pp < &proc[NPROC]; pp++) {
+     // this code uses pp->parent without holding pp->lock.
+@@ -281,6 +295,7 @@ void reparent(struct proc *p) {
+       // pp->parent can't change between the check and the acquire()
+       // because only the parent changes it, and we're the parent.
+       acquire(&pp->lock);
++      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, i++, pp->pid, pp->name, procstate_str[pp->state]);
+       pp->parent = initproc;
+       // we should wake up init here, but that would require
+       // initproc->lock, which would be a deadlock, since we hold
+@@ -329,6 +344,8 @@ void exit(int status) {
+   // to a dead or wrong process; proc structs are never re-allocated
+   // as anything else.
+   acquire(&p->lock);
++  if (strcmp(p->name, "sh") != 0)
++    exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, p->parent->pid, p->name, procstate_str[p->state]);
+   struct proc *original_parent = p->parent;
+   release(&p->lock);
+ 
+@@ -405,6 +422,49 @@ int wait(uint64 addr) {
+   }
+ }
+ 
++// Wait for a child process to exit and return its pid.
++// Return -1 if this process has no children.
++int wait_unblock(uint64 addr) {
++  struct proc *np;
++  int pid;
++  struct proc *p = myproc();
++
++  // hold p->lock for the whole time to avoid lost
++  // wakeups from a child's exit().
++  acquire(&p->lock);
++
++  // Scan through table looking for exited children.
++  // havekids = 0;
++  for (np = proc; np < &proc[NPROC]; np++) {
++    // this code uses np->parent without holding np->lock.
++    // acquiring the lock first would cause a deadlock,
++    // since np might be an ancestor, and we already hold p->lock.
++    if (np->parent == p) {
++      // np->parent can't change between the check and the acquire()
++      // because only the parent changes it, and we're the parent.
++      acquire(&np->lock);
++      // havekids = 1;
++      if (np->state == ZOMBIE) {
++        // Found one.
++        pid = np->pid;
++        if (addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate, sizeof(np->xstate)) < 0) {
++          release(&np->lock);
++          release(&p->lock);
++          return -1;
++        }
++        freeproc(np);
++        release(&np->lock);
++        release(&p->lock);
++        return pid;
++      }
++      release(&np->lock);
++    }
++  }
++
++  release(&p->lock);
++  return -1;
++}
++
+ // Per-CPU process scheduler.
+ // Each CPU calls scheduler() after setting itself up.
+ // Scheduler never returns.  It loops, doing:
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 4c97875..6c3ca16 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -89,6 +89,7 @@ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
+ extern uint64 sys_rename(void);
++extern uint64 sys_yield(void);
+ 
+ static uint64 (*syscalls[])(void) = {
+     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
+@@ -96,7 +97,7 @@ static uint64 (*syscalls[])(void) = {
+     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
+     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
+     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
+-    [SYS_close] sys_close, [SYS_rename] sys_rename,
++    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_yield] sys_yield,
+ };
+ 
+ void syscall(void) {
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 6998f87..ce5a3f3 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -21,3 +21,4 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_rename 22
++#define SYS_yield  23
+\ No newline at end of file
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index a69071e..4228075 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -20,7 +20,17 @@ uint64 sys_fork(void) { return fork(); }
+ 
+ uint64 sys_wait(void) {
+   uint64 p;
++  int n;
++  if (argint(1, &n) < 0) return -1;
+   if (argaddr(0, &p) < 0) return -1;
++  if (n == 1)
++  {
++    // for(;;){
++    //   int ret = wait_unblock(p);
++    //   if (ret != -1) return ret;
++    // }
++    return wait_unblock(p);
++  }
+   return wait(p);
+ }
+ 
+@@ -81,3 +91,11 @@ uint64 sys_rename(void) {
+   p->name[len] = '\0';
+   return 0;
+ }
++
++uint64 sys_yield(void) {
++  yield();
++  struct proc *p = myproc();
++  uint64 pc = p->trapframe->epc;
++  printf("start to yield, user pc %p\n", pc);
++  return 0;
++}
+\ No newline at end of file
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..bf0d87a
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++4
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index ec47d9d..9de79df 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -5,6 +5,7 @@ struct rtcdate;
+ int fork(void);
+ int exit(int) __attribute__((noreturn));
+ int wait(int*, int);
++int yield(void);
+ int pipe(int*);
+ int write(int, const void*, int);
+ int read(int, void*, int);
+diff --git a/user/usys.pl b/user/usys.pl
+index 3a2f6c4..c17d993 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -37,3 +37,4 @@ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
+ entry("rename");
++entry("yield");
+\ No newline at end of file
