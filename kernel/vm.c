@@ -379,3 +379,41 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
+
+void vmprint_internal(pagetable_t pagetable, int depth, uint64 pva) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    
+    if ((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      // 指向更低一级的页表
+      uint64 child = PTE2PA(pte);
+
+      // 打印当前级别的页表项信息
+      for (int d = 0; d < depth; d++) printf("||   "); // 根据深度打印缩进
+      printf("||idx: %d: pa: %p, flags: ----\n", i, child);
+
+      // 计算下一级的部分虚拟地址
+      uint64 next_pva = pva | ((uint64)i << ((9 * (2 - depth)) + PGSHIFT));
+
+      // 递归调用处理更低一级的页表
+      vmprint_internal((pagetable_t)child, depth + 1, next_pva);
+    } else if (pte & PTE_V) {
+      // 指向页框的页表项
+      uint64 va = pva | ((uint64)i << PGSHIFT); // 添加页内偏移
+
+      for (int d = 0; d < depth; d++) printf("||   "); // 根据深度打印缩进
+      printf("||idx: %d: va: %p -> pa: %p, flags: %s%s%s%s\n",
+             i,
+             va,
+             PTE2PA(pte),
+             (pte & PTE_R) ? "r" : "-", 
+             (pte & PTE_W) ? "w" : "-", 
+             (pte & PTE_X) ? "x" : "-", 
+             (pte & PTE_U) ? "u" : "-");
+    }
+  }
+}
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_internal(pagetable, 0, 0);
+}
