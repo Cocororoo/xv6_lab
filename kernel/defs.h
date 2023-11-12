@@ -179,8 +179,12 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             test_pagetable();
+
 void            vmprint_internal(pagetable_t, int, uint64);
 void            vmprint(pagetable_t);
+pagetable_t     kvmcreatetbl();
+void            kvmmap_new(pagetable_t, uint64, uint64, uint64, int);
+void            kvminithart_pgtbl(pagetable_t pagetable);
 
 
 // plic.c

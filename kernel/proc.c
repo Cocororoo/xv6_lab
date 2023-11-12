@@ -37,6 +37,8 @@ void procinit(void) {
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
+
+    p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -111,6 +113,10 @@ found:
     return 0;
   }
 
+  // 创建独立内核页表
+  p->k_pagetable = kvmcreatetbl();
+  kvmmap_new(p->k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -118,6 +124,24 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+// 释放进程对应的独立内核页表，但不释放物理页帧
+static void freekpagebtable(pagetable_t pagetable) {
+  for (int i = 0; i < 512; i++) {
+    if (pagetable[i] & PTE_V) {
+      uint64 child_pa = PTE2PA(pagetable[i]);
+      for (int j = 0; j < 512; j++) {
+        if (pagetable[i] & PTE_V) {
+          uint64 grandchild_pa = PTE2PA(((pagetable_t)child_pa)[j]);
+          if (grandchild_pa != 0)
+            kfree((void *)grandchild_pa);
+        }
+      }
+      kfree((void *)child_pa);
+    }
+  }
+  kfree((void *)pagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -136,6 +160,7 @@ static void freeproc(struct proc *p) {
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  freekpagebtable(p->k_pagetable);  
 }
 
 // Create a user page table for a given process,
@@ -430,6 +455,10 @@ void scheduler(void) {
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 切换至该进程对应的独立内核页表
+        kvminithart_pgtbl(p->k_pagetable);
+        
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -437,6 +466,9 @@ void scheduler(void) {
         c->proc = 0;
 
         found = 1;
+
+        // 恢复至全局页表
+        kvminithart();
       }
       release(&p->lock);
     }
