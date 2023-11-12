@@ -186,6 +186,8 @@ pagetable_t     kvmcreatetbl();
 void            kvmmap_new(pagetable_t, uint64, uint64, uint64, int);
 void            kvminithart_pgtbl(pagetable_t pagetable);
 
+void            sync_pagetable(pagetable_t, pagetable_t);
+
 
 // plic.c
 void            plicinit(void);

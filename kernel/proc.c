@@ -129,20 +129,26 @@ found:
 // 释放进程对应的独立内核页表，但不释放物理页帧
 static void freekpagebtable(pagetable_t pagetable) {
   for (int i = 0; i < 512; i++) {
-    if (pagetable[i] & PTE_V) {
+    if (pagetable[i] & PTE_V) {  // Check if the first level entry is valid
       uint64 child_pa = PTE2PA(pagetable[i]);
+      pagetable_t child_pt = (pagetable_t)child_pa;
+      
       for (int j = 0; j < 512; j++) {
-        if (pagetable[i] & PTE_V) {
-          uint64 grandchild_pa = PTE2PA(((pagetable_t)child_pa)[j]);
-          if (grandchild_pa != 0)
+        if (child_pt[j] & PTE_V) {  // Check if the second level entry is valid
+          uint64 grandchild_pa = PTE2PA(child_pt[j]);
+          // Only free the page if it's not shared
+          if ((child_pt[j] & PTE_S) == 0) {
             kfree((void *)grandchild_pa);
+          }
         }
       }
-      kfree((void *)child_pa);
+      kfree((void *)child_pa);  // Free the second-level page table
     }
   }
-  kfree((void *)pagetable);
+  kfree((void *)pagetable);  // Free the first-level page table
 }
+
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.

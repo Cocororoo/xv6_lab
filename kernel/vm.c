@@ -358,6 +358,32 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
   return 0;
 }
 
+// 把进程的用户页表映射到内核页表中
+// 将用户页表的第三级页表映射为内核页表的共享页表
+void sync_pagetable(pagetable_t kpagetable, pagetable_t upagetable) {
+  for (int i = 0; i < 512; i++) {
+    pte_t *pte = &upagetable[i];
+    if (*pte & PTE_V) { // 检查页表项是否有效
+      if ((*pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        // 这是一个指向下一级页表的指针
+        uint64 child_pa = PTE2PA(*pte);
+        pagetable_t child_pt = (pagetable_t)child_pa;
+        
+        // 现在处理第三级页表
+        for (int j = 0; j < 512; j++) {
+          pte_t *child_pte = &child_pt[j];
+          if (*child_pte & PTE_V) { // 检查第三级页表项是否有效
+            // 将用户的第三级页表项映射到内核页表中
+            pte_t *kpte = walk(kpagetable, (uint64)PTE2PA(*child_pte), 1);
+            *kpte = *child_pte | PTE_S; // 设置共享位
+          }
+        }
+      }
+    }
+  }
+}
+
+
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
