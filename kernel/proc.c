@@ -223,6 +223,8 @@ void userinit(void) {
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  // 同步独立内核页表
+  sync_pagetable(p->k_pagetable, p->pagetable);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -251,6 +253,8 @@ int growproc(int n) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
+  // 同步独立内核页表
+  sync_pagetable(p->k_pagetable, p->pagetable);
   return 0;
 }
 
@@ -273,6 +277,9 @@ int fork(void) {
     return -1;
   }
   np->sz = p->sz;
+
+  // 同步新创建的子进程的独立内核页表
+  sync_pagetable(np->k_pagetable, np->pagetable);
 
   np->parent = p;
 

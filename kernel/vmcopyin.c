@@ -26,11 +26,13 @@ int statscopyin(char *buf, int sz) {
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
+  w_sstatus(r_sstatus() | SSTATUS_SUM);
   struct proc *p = myproc();
 
   if (srcva >= p->sz || srcva + len >= p->sz || srcva + len < srcva) return -1;
   memmove((void *)dst, (void *)srcva, len);
   stats.ncopyin++;  // XXX lock
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);
   return 0;
 }
 
@@ -39,6 +41,7 @@ int copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
 // until a '\0', or max.
 // Return 0 on success, -1 on error.
 int copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
+  w_sstatus(r_sstatus() | SSTATUS_SUM);
   struct proc *p = myproc();
   char *s = (char *)srcva;
 
@@ -47,5 +50,6 @@ int copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
     dst[i] = s[i];
     if (s[i] == '\0') return 0;
   }
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);
   return -1;
 }

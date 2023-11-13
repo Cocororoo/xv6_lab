@@ -100,6 +100,7 @@ int exec(char *path, char **argv) {
   if (p->pid == 1){
     vmprint(p->pagetable);
   }
+  sync_pagetable(p->k_pagetable, p->pagetable);  // 同步页表
   return argc;  // this ends up in a0, the first argument to main(argc, argv)
 
 bad:

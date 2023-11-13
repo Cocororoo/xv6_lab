@@ -50,15 +50,13 @@ pagetable_t kvmcreatetbl() {
   pagetable_t new_kpagetable = (pagetable_t)kalloc();
   memset(new_kpagetable, 0, PGSIZE);
 
-  // printf("kvmcreatetbl(UART): %p\n", new_kpagetable);
   // uart registers
   kvmmap_new(new_kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
-  // printf("kvmcreatetbl(VIRTIO): %p\n", new_kpagetable);
   // virtio mmio disk interface
   kvmmap_new(new_kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
-  // CLINT
+  // 不要映射CLINT
   // kvmmap_new(new_kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // printf("kvmcreatetbl(PLIC): %p\n", new_kpagetable);
@@ -359,27 +357,18 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
 }
 
 // 把进程的用户页表映射到内核页表中
-// 将用户页表的第三级页表映射为内核页表的共享页表
-void sync_pagetable(pagetable_t kpagetable, pagetable_t upagetable) {
-  for (int i = 0; i < 512; i++) {
-    pte_t *pte = &upagetable[i];
-    if (*pte & PTE_V) { // 检查页表项是否有效
-      if ((*pte & (PTE_R | PTE_W | PTE_X)) == 0) {
-        // 这是一个指向下一级页表的指针
-        uint64 child_pa = PTE2PA(*pte);
-        pagetable_t child_pt = (pagetable_t)child_pa;
-        
-        // 现在处理第三级页表
-        for (int j = 0; j < 512; j++) {
-          pte_t *child_pte = &child_pt[j];
-          if (*child_pte & PTE_V) { // 检查第三级页表项是否有效
-            // 将用户的第三级页表项映射到内核页表中
-            pte_t *kpte = walk(kpagetable, (uint64)PTE2PA(*child_pte), 1);
-            *kpte = *child_pte | PTE_S; // 设置共享位
-          }
-        }
-      }
-    }
+// 将用户页表的第三级页表映射到内核页表次页表的页表项
+void sync_pagetable(pagetable_t k_pagetable, pagetable_t u_pagetable) {
+  pte_t src_sec_pgtbl = u_pagetable[0];
+  pte_t dst_sec_pgtbl = k_pagetable[0];
+
+  uint64 src_sec_pgtbl_pa = PTE2PA(src_sec_pgtbl);
+  uint64 dst_sec_pgtbl_pa = PTE2PA(dst_sec_pgtbl);
+
+  pte_t *dst_leaf;
+  for (int i = 0; i < SHARE_PAGESNUM; i++){
+    dst_leaf = &(((pagetable_t)dst_sec_pgtbl_pa)[i]);
+    *dst_leaf = ((pagetable_t)src_sec_pgtbl_pa)[i] | PTE_S;
   }
 }
 
@@ -388,21 +377,8 @@ void sync_pagetable(pagetable_t kpagetable, pagetable_t upagetable) {
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
-  uint64 n, va0, pa0;
 
-  while (len > 0) {
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if (pa0 == 0) return -1;
-    n = PGSIZE - (srcva - va0);
-    if (n > len) n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -410,38 +386,39 @@ int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len) {
 // until a '\0', or max.
 // Return 0 on success, -1 on error.
 int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while (got_null == 0 && max > 0) {
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if (pa0 == 0) return -1;
-    n = PGSIZE - (srcva - va0);
-    if (n > max) n = max;
+  // while (got_null == 0 && max > 0) {
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if (pa0 == 0) return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if (n > max) n = max;
 
-    char *p = (char *)(pa0 + (srcva - va0));
-    while (n > 0) {
-      if (*p == '\0') {
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *)(pa0 + (srcva - va0));
+  //   while (n > 0) {
+  //     if (*p == '\0') {
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if (got_null) {
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if (got_null) {
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // check if use global kpgtbl or not
